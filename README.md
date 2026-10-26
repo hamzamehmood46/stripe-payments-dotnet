@@ -3,6 +3,8 @@
 A small ASP.NET Core API that integrates with **Stripe in test mode**: recurring subscriptions, ACH bank debit
 (US bank account) payments, and a webhook endpoint that verifies Stripe's signature and processes each event exactly once.
 
+**Live demo: [stripe-payments-dotnet.onrender.com](https://stripe-payments-dotnet.onrender.com/swagger)** (Swagger; Stripe is simulated there, so no keys and no money; the free host sleeps when idle, so the first request can take about a minute)
+
 > **Test mode only.** The app refuses to start with anything other than an `sk_test_...` key, and no real money is involved.
 
 ## What it shows
@@ -16,7 +18,16 @@ A small ASP.NET Core API that integrates with **Stripe in test mode**: recurring
 | **Idempotent requests** | Stripe calls carry an idempotency key (from the `Idempotency-Key` header, or derived). `POST /payments/ach` requires one, so a client retry cannot create a second charge. |
 | **Testability** | Stripe.net is wrapped behind `IStripeGateway`; the webhook logic reads raw JSON, so tests need no network and no SDK object graphs. |
 
-## Run it
+## Try the live demo (2 minutes)
+
+1. `POST /customers` with an email, then `POST /subscriptions` with that customer id and any price id. The subscription starts as `incomplete`.
+2. `POST /demo/simulate` with `{"type":"invoice.paid","objectId":"<the subscriptionId>"}`. The simulator builds a Stripe event, signs it like Stripe does and sends it through the same verification and processing as a real webhook. The subscription becomes `active`.
+3. Send the same call with `"eventId":"evt_1"` twice: the second answer is `Duplicate` and nothing changes. Set `"tamper":true` or `"ageSeconds":3600` to see the signature check refuse it.
+4. For ACH, `POST /payments/ach` with an `Idempotency-Key` header (repeat the call with the same key and you get the same payment, never a second charge), then simulate `payment_intent.processing` and `payment_intent.succeeded` for its id.
+
+Demo mode is switched on with `Demo__Enabled=true` and replaces Stripe with an in-memory stand-in. Without it the app talks to Stripe test mode as described below.
+
+## Run it with real Stripe test mode
 
 ```bash
 cd src/StripePayments.Api
@@ -52,10 +63,10 @@ stripe trigger payment_intent.succeeded
 dotnet test
 ```
 
-18 tests (xUnit, in-memory SQLite) cover: invoice paid and failed transitions (including the newer nested invoice shape),
+33 tests (xUnit, SQLite) cover: invoice paid and failed transitions (including the newer nested invoice shape),
 subscription created, updated and deleted, ACH processing, success and failure, unknown event types, an invoice for a subscription
 we do not know about, **the same event delivered twice being applied once**, and signature checks (valid, wrong secret, tampered payload,
-expired timestamp, missing or malformed header).
+expired timestamp, missing or malformed header), plus the demo: the full subscription and ACH lifecycles through the simulator, duplicate delivery, tampered and expired events refused, same-key retries returning the same object, and the simulator not existing outside demo mode.
 
 ## Notes and limits
 

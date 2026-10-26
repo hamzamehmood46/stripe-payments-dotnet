@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.OpenApi.Models;
 using Stripe;
 using StripePayments.Api.Data;
+using StripePayments.Api.Demo;
 using StripePayments.Api.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -9,11 +11,31 @@ var builder = WebApplication.CreateBuilder(args);
 var secretKey = builder.Configuration["Stripe:SecretKey"] ?? "";
 var webhookSecret = builder.Configuration["Stripe:WebhookSecret"] ?? "";
 
+// Demo mode (Demo:Enabled=true) replaces Stripe with a simulator, so a public copy needs no keys and cannot spend or touch anything.
+var demo = builder.Configuration.GetValue<bool>("Demo:Enabled");
+if (demo)
+{
+    secretKey = "";
+    webhookSecret = "whsec_demo_" + Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+}
+
 builder.Services.AddDbContext<PaymentsDbContext>(o =>
     o.UseSqlite(builder.Configuration.GetConnectionString("Payments") ?? "Data Source=payments.db"));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton(new StripeClient(string.IsNullOrWhiteSpace(secretKey) ? "sk_test_not_configured" : secretKey));
-builder.Services.AddSingleton<IStripeGateway, StripeGateway>();
+if (demo)
+    builder.Services.AddSingleton<IStripeGateway, DemoStripeGateway>();
+else
+    builder.Services.AddSingleton<IStripeGateway, StripeGateway>();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(o => o.SwaggerDoc("v1", new OpenApiInfo
+{
+    Title = "Stripe Payments",
+    Version = "v1",
+    Description = demo
+        ? "Public demo: Stripe is simulated, no keys, no money. 1) POST /customers, 2) POST /subscriptions (or POST /payments/ach with an Idempotency-Key), 3) POST /demo/simulate to play Stripe and send a signed webhook for that id. Repeat the same eventId to see it applied once, set tamper or ageSeconds to see it refused."
+        : "Stripe test-mode integration: subscriptions, ACH and signed idempotent webhooks.",
+}));
 builder.Services.AddSingleton<IWebhookSignatureVerifier>(new WebhookSignatureVerifier(webhookSecret));
 builder.Services.AddScoped<WebhookProcessor>();
 
@@ -24,6 +46,15 @@ using (var scope = app.Services.CreateScope())
 
 if (!secretKey.StartsWith("sk_test_", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(secretKey))
     throw new InvalidOperationException("Refusing to start: only Stripe test-mode keys (sk_test_...) are allowed in this project.");
+
+if (demo || app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+if (demo)
+    DemoEndpoints.Map(app, webhookSecret);
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
